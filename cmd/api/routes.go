@@ -6,7 +6,7 @@ import (
 	"github.com/julienschmidt/httprouter"
 )
 
-func (app *application) routes() *httprouter.Router {
+func (app *application) routes() http.Handler {
 	router := httprouter.New()
 
 	// Handle cases where there are no matching routes and method not allowed
@@ -24,5 +24,14 @@ func (app *application) routes() *httprouter.Router {
 	router.HandlerFunc(http.MethodDelete, "/v1/movies/:id", app.deleteMovieHandler)
 	router.HandlerFunc(http.MethodGet, "/v1/movies", app.listMoviesHandler)
 
-	return router
+	return app.recoverPanic(app.rateLimit(router))
 }
+
+// app.recoverPanic(app.rateLimit(router)) will run once when server starts
+// During this phase:
+//  - Any variables before return http.HandlerFunc(...) are created once
+// 	- Those variables become captured by the returned closure
+
+// When a request arrives, the Go HTTP server (from net/http) creates one goroutine (per request) and calls:
+// For each incoming request, only the logic inside the returned handler functions executes.
+// Code before the returned handler function in each middleware runs once at that time.
