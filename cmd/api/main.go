@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	// Import the pq driver so that it can register itself with the database/sql
@@ -22,6 +25,11 @@ import (
 // generate this automatically at build time, but for now we'll just store the version
 // number as a hard-coded global constant.
 const version = "1.0.0"
+
+// Initialize a new logger which writes messages to stdout,
+// prefixed with the current date and time.
+// logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
+var logger = jsonlog.New(os.Stdout, jsonlog.LevelInfo)
 
 // Define a config struct to hold all the configuration settings for our application.
 // For now, the only configuration settings will be the network port that we want the
@@ -54,6 +62,67 @@ type application struct {
 	models data.Models
 }
 
+func (app *application) serve() error {
+	// Create the HTTP server.
+	srv := &http.Server{
+		Addr:    fmt.Sprintf(":%d", app.config.port),
+		Handler: app.routes(),
+		// Create a new Go log.Logger instance with the log.New() function, passing in
+		// our custom Logger as the first parameter. The "" and 0 indicate that the
+		// log.Logger instance should not use a prefix or any flags.
+		ErrorLog:     log.New(logger, "", 0),
+		IdleTimeout:  time.Minute,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
+	shutdownError := make(chan error)
+	go func() {
+		// Create a channel to receive the SIGNAL value from system
+		quit := make(chan os.Signal, 1)
+		// signal.Notify help send signals of system to a specific channel
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		s := <-quit
+
+		// Only after s receive a value from channel quit, it will execute the code below
+		app.logger.PrintInfo("shutting down server", map[string]string{
+			"signal": s.String(),
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// If the graceful shutdown is successful, it will send nil to the channel, if not it will send an error. Graceful shutdown failed mainly
+		// because of some problem happen when closing the http server or anything that can not be closed in the deadline duration (5s in this case)
+		shutdownError <- srv.Shutdown(ctx)
+	}()
+
+	// Start the HTTP server.
+	app.logger.PrintInfo("starting server", map[string]string{
+		"addr": srv.Addr,
+		"env":  app.config.env,
+	})
+
+	// Calling Shutdown() will cause ListenAndServe immediately return a http.ErrServerClosed error. If we receive this error, it is a good sign that the
+	// Shutdown() function works.
+	err := srv.ListenAndServe()
+	if !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+
+	// This will make this function will wait even after the http server is closed to wait for the message from Graceful shutdown
+	err = <-shutdownError
+	if err != nil {
+		return err
+	}
+
+	app.logger.PrintInfo("stopped server", map[string]string{
+		"addr": srv.Addr,
+	})
+
+	return nil
+}
+
 func main() {
 	// Declare an instance of the config struct.
 	var cfg config
@@ -79,11 +148,6 @@ func main() {
 
 	flag.Parse()
 
-	// Initialize a new logger which writes messages to stdout,
-	// prefixed with the current date and time.
-	// logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
-	logger := jsonlog.New(os.Stdout, jsonlog.LevelInfo)
-
 	// Call the openDB() helper function (see below) to create the connection pool,
 	// passing in the config struct. If this returns an error, we log it and exit the
 	// application immediately.
@@ -108,27 +172,11 @@ func main() {
 		models: data.NewModels(db),
 	}
 
-	// Create the HTTP server.
-	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.port),
-		Handler: app.routes(),
-		// Create a new Go log.Logger instance with the log.New() function, passing in
-		// our custom Logger as the first parameter. The "" and 0 indicate that the
-		// log.Logger instance should not use a prefix or any flags.
-		ErrorLog:     log.New(logger, "", 0),
-		IdleTimeout:  time.Minute,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+	// Call app.serve() to start a HTTP server
+	err = app.serve()
+	if err != nil {
+		logger.PrintFatal(err, nil)
 	}
-
-	// Start the HTTP server.
-	logger.PrintInfo("starting server", map[string]string{
-		"addr": srv.Addr,
-		"env":  cfg.env,
-	})
-
-	err = srv.ListenAndServe()
-	logger.PrintFatal(err, nil)
 }
 
 // The openDB() function returns a sql.DB connection pool.
