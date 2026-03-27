@@ -182,3 +182,23 @@ func (app *application) readInt(qs url.Values, key string, defaultValue int, v *
 	// Otherwise, return the converted integer value.
 	return i
 }
+
+func (app *application) background(fn func()) {
+	app.wg.Add(1)
+	go func() {
+		defer app.wg.Done()
+
+		// Panic recovery
+		defer func() {
+			// Use recovery function to catch any panic may happen
+			// Because the recovery in middleware function can not catch panic happens in background goroutines,
+			// so for each background goroutines must have a recovery defered function to catch panic.
+			if err := recover(); err != nil {
+				app.logger.PrintError(fmt.Errorf("%s", err), nil)
+			}
+		}()
+
+		// Email notification
+		fn()
+	}()
+}

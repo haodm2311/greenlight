@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"time"
@@ -12,6 +13,8 @@ import (
 
 var ErrDuplicateEmail = errors.New("duplicate email")
 
+var AnonymousUser = &User{}
+
 type User struct {
 	ID        int64     `json:"id"`
 	CreatedAt time.Time `json:"-"`
@@ -20,6 +23,12 @@ type User struct {
 	Password  password  `json:"-"`
 	Activated bool      `json:"activated"`
 	Version   int32     `json:"-"`
+}
+
+// Check if the current user is Anonymous user by comparing user instance with AnonymousUser instance, if user instance is Anonymous user, it means current user
+// is an empty User (no values are set)
+func (u *User) IsAnonymous() bool {
+	return u == AnonymousUser
 }
 
 type password struct {
@@ -136,7 +145,7 @@ func (u UserModel) GetByMail(email string) (*User, error) {
 func (u UserModel) Update(user *User) error {
 	query := `
 	UPDATE users
-	SET name = $1, email = $2, password = $3, activated = $4,  version = version + 1
+	SET name = $1, email = $2, password_hash = $3, activated = $4,  version = version + 1
 	WHERE id = $5 AND version = $6
 	RETURNING version`
 
@@ -155,4 +164,46 @@ func (u UserModel) Update(user *User) error {
 	}
 
 	return nil
+}
+
+func (u UserModel) GetForToken(tokenScope, tokenPlainText string) (*User, error) {
+	hash := sha256.Sum256([]byte(tokenPlainText))
+
+	query := `
+	SELECT 
+		u.id,
+		u.created_at,
+		u.name,
+		u.email,
+		u.password_hash,
+		u.activated,
+		u.version
+	FROM users u 
+	JOIN tokens t 
+		ON u.id = t.user_id
+	WHERE t.hash = $1 AND t.scope = $2 AND t.expiry > $3`
+
+	ctx, cancle := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancle()
+
+	var user User
+	err := u.DB.QueryRowContext(ctx, query, hash[:], tokenScope, time.Now()).Scan(
+		&user.ID,
+		&user.CreatedAt,
+		&user.Name,
+		&user.Email,
+		&user.Password.hash,
+		&user.Activated,
+		&user.Version,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, ErrRecordNotFound
+		default:
+			return nil, err
+		}
+	}
+
+	return &user, nil
 }

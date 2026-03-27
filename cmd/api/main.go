@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	_ "github.com/lib/pq"
 	"greenlight.haodm.net/internal/data"
 	"greenlight.haodm.net/internal/jsonlog"
+	"greenlight.haodm.net/internal/mailer"
 )
 
 // Declare a string containing the application version number. Later in the book we'll
@@ -51,6 +54,16 @@ type config struct {
 		burst  int
 		enable bool
 	}
+	smtp struct {
+		host     string
+		port     int
+		username string
+		password string
+		sender   string
+	}
+	cors struct {
+		trustedOrigins []string
+	}
 }
 
 // Define an application struct to hold the dependencies for our HTTP handlers, helpers,
@@ -60,6 +73,8 @@ type application struct {
 	config config
 	logger *jsonlog.Logger
 	models data.Models
+	mailer mailer.Mailer
+	wg     sync.WaitGroup // add this to handle graceful shutdown for Background tasks/goroutines
 }
 
 func (app *application) serve() error {
@@ -94,7 +109,24 @@ func (app *application) serve() error {
 
 		// If the graceful shutdown is successful, it will send nil to the channel, if not it will send an error. Graceful shutdown failed mainly
 		// because of some problem happen when closing the http server or anything that can not be closed in the deadline duration (5s in this case)
-		shutdownError <- srv.Shutdown(ctx)
+		// shutdownError <- srv.Shutdown(ctx)
+
+		// We use this to send data to shutdownError channel only if Shutdown has error, if Shutdown return nil we will not send data to shutdownError channel
+		// yet because we need to do the next step to gracefully shutdown Background tasks, only after that we can send nil data to shutdownError to notify the
+		// Shut down has finished
+		err := srv.Shutdown(ctx)
+		if err != nil {
+			shutdownError <- err
+		}
+
+		app.logger.PrintInfo("completing background tasks", map[string]string{
+			"addr": srv.Addr,
+		})
+
+		app.wg.Wait()
+
+		// Only after all the background tasks finishes, we then can send nil message to shutdownError to exit the application
+		shutdownError <- nil
 	}()
 
 	// Start the HTTP server.
@@ -144,6 +176,20 @@ func main() {
 	flag.IntVar(&cfg.limiter.burst, "limiter-burst", 4, "Rate limiter maximum burst")
 	flag.BoolVar(&cfg.limiter.enable, "limiter-enable", true, "Rate limiter enable")
 
+	// Read the SMTP server configuration settings into the config struct,
+	// using the Mailtrap settings as the default values.
+	flag.StringVar(&cfg.smtp.host, "smtp-host", "smtp.mailtrap.io", "SMTP host")
+	flag.IntVar(&cfg.smtp.port, "smtp-port", 2525, "SMTP port")
+	flag.StringVar(&cfg.smtp.username, "smtp-username", "eb024e76400275", "SMTP username")
+	flag.StringVar(&cfg.smtp.password, "smtp-password", "8b48cd9eea2927", "SMTP password")
+	flag.StringVar(&cfg.smtp.sender, "smtp-sender", "Greenlight <no-reply@greenlight.alexedwards.net>", "SMTP sender")
+
+	// Use flag.Func to add a function to processs logic to input value then assign to propeer variable
+	flag.Func("cors-trusted-origin", "Trusted CORS origins (space separated)", func(val string) error {
+		cfg.cors.trustedOrigins = strings.Fields(val)
+		return nil
+	})
+
 	fmt.Println(cfg.db.dsn)
 
 	flag.Parse()
@@ -170,8 +216,8 @@ func main() {
 		config: cfg,
 		logger: logger,
 		models: data.NewModels(db),
+		mailer: mailer.New(cfg.smtp.host, cfg.smtp.port, cfg.smtp.username, cfg.smtp.password, cfg.smtp.sender),
 	}
-
 	// Call app.serve() to start a HTTP server
 	err = app.serve()
 	if err != nil {
