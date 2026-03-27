@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"expvar"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -210,6 +212,24 @@ func main() {
 	// Also log a message to say that the connection pool has been successfully
 	// established.
 	logger.PrintInfo("database connection pool established", nil)
+
+	// Add expvar
+	expvar.NewString("version").Set(version)
+
+	// Publish number of current goroutines
+	expvar.Publish("goroutines", expvar.Func(func() any {
+		return runtime.NumGoroutine()
+	}))
+
+	// Publish database connection pool statistics
+	expvar.Publish("database", expvar.Func(func() any {
+		return db.Stats()
+	}))
+
+	// Publish the current Unix timestamp
+	expvar.Publish("timestamp", expvar.Func(func() any {
+		return time.Now().Unix()
+	}))
 
 	// Declare an instance of the application struct.
 	app := &application{

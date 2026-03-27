@@ -36,7 +36,7 @@ func (app *application) routes() http.Handler {
 	// expvar
 	router.Handler(http.MethodGet, "/debug/vars", expvar.Handler())
 
-	return app.recoverPanic(app.enableCORS(app.rateLimit(app.authenticate(router))))
+	return app.metrics(app.recoverPanic(app.enableCORS(app.rateLimit(app.authenticate(router)))))
 }
 
 // app.recoverPanic(app.rateLimit(router)) will run once when server starts
