@@ -26,15 +26,16 @@ import (
 	"greenlight.haodm.net/internal/mailer"
 )
 
-// Declare a string containing the application version number. Later in the book we'll
-// generate this automatically at build time, but for now we'll just store the version
-// number as a hard-coded global constant.
-const version = "1.0.0"
-
 // Initialize a new logger which writes messages to stdout,
 // prefixed with the current date and time.
 // logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 var logger = jsonlog.New(os.Stdout, jsonlog.LevelInfo)
+
+// Build time
+var (
+	buildTime string
+	version   string
+)
 
 // Define a config struct to hold all the configuration settings for our application.
 // For now, the only configuration settings will be the network port that we want the
@@ -168,7 +169,7 @@ func main() {
 
 	// Read the DSN value from the db-dsn command-line flag into the config struct. We
 	// default to using our development DSN if no flag is provided.
-	flag.StringVar(&cfg.db.dsn, "db-dsn", os.Getenv("GREENLIGHT_DB_DSN"), "PostgreSQL DSN")
+	flag.StringVar(&cfg.db.dsn, "db-dsn", "", "PostgreSQL DSN")
 
 	// Connection pool settings
 	flag.IntVar(&cfg.db.maxOpenConns, "db-max-open-conns", 25, "Postgres max open connections")
@@ -194,7 +195,15 @@ func main() {
 
 	fmt.Println(cfg.db.dsn)
 
+	displayVersion := flag.Bool("version", false, "Display version and exit")
+
 	flag.Parse()
+
+	if *displayVersion {
+		fmt.Printf("Version:\t%s\n", version)
+		fmt.Printf("Build time:\t%s\n", buildTime)
+		os.Exit(0)
+	}
 
 	// Call the openDB() helper function (see below) to create the connection pool,
 	// passing in the config struct. If this returns an error, we log it and exit the
